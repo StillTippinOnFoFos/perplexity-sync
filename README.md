@@ -1,329 +1,218 @@
 # 🔄 Perplexity GitHub Sync
 
-> **An open-source serverless integration that automatically syncs content from Perplexity AI conversations to GitHub repositories via pull requests.**
+*Serverless integration for instant, secure, version-controlled sync of Perplexity AI content to GitHub via automated pull requests.*
 
-## Overview
+## What This Does
 
-This project provides a seamless way to sync documentation, notes, and structured content from Perplexity AI directly to your GitHub repositories. Instead of copy-pasting, it creates automated pull requests for review and version control.
+Instead of copy-pasting content from Perplexity conversations, this creates a simple API endpoint that:
+1. Receives markdown/text from Perplexity 
+2. Creates a new branch in your GitHub repo
+3. Commits the content as a file
+4. Opens a pull request for you to review and merge
 
-## 🎯 Project Goals
+Everything stays private, secure, and version-controlled.
 
-- **Automated Sync**: Push content from Perplexity conversations directly to GitHub
-- **Version Control**: All changes go through GitHub's PR review process
-- **Security**: Private repositories with secure token management
-- **Serverless**: Zero-maintenance deployment with free hosting
-- **Flexible**: Works with any type of documentation or structured content
+## Quick Setup (5 minutes)
 
-## 🏗️ Architecture
+### 1. Create GitHub Token
+- Go to GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens
+- Create token with access to your target repo
+- Grant only "Contents" and "Pull requests" permissions
+- Copy the token
 
-```
-┌─────────────────┐    HTTP POST    ┌─────────────────┐    GitHub API    ┌─────────────────┐
-│                 │ ─────────────> │                 │ ──────────────> │                 │
-│   Perplexity    │   (Content)     │ Cloudflare      │  (Branch + PR)   │   GitHub Repo   │
-│   Assistant     │                 │ Worker          │                 │                 │
-└─────────────────┘                 └─────────────────┘                 └─────────────────┘
-```
-
-### Components
-
-1. **Perplexity Integration**: AI assistant generates and manages content
-2. **Cloudflare Worker**: Serverless API endpoint that receives updates and creates GitHub PRs
-3. **GitHub Repository**: Version-controlled storage for all your content
-4. **Pull Request Workflow**: Review and approve changes before they're merged
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (v16+)
-- [Cloudflare Account](https://cloudflare.com) (free tier works)
-- [GitHub Personal Access Token](https://github.com/settings/tokens) with repo permissions
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-
-### Installation
-
-1. **Clone and setup the project:**
-   ```bash
-   git clone https://github.com/yourusername/perplexity-github-sync.git
-   cd perplexity-github-sync
-   npm install
-   ```
-
-2. **Configure your worker:**
-   ```bash
-   # Copy and edit the configuration file
-   cp wrangler.toml.example wrangler.toml
-   # Edit wrangler.toml with your repository details
-   ```
-
-3. **Set up secrets:**
-   ```bash
-   # Add your GitHub Personal Access Token
-   wrangler secret put GITHUB_TOKEN
-   
-   # Optional: Add API key for additional endpoint security
-   wrangler secret put API_KEY
-   ```
-
-4. **Deploy the Worker:**
-   ```bash
-   wrangler deploy
-   ```
-
-5. **Note your endpoint URL** (e.g., `https://your-worker.yourname.workers.dev`)
-
-## 🔒 GitHub Security Configuration
-
-### Creating a Secure Personal Access Token
-
-1. **Go to GitHub Settings** → Developer settings → Personal access tokens → Tokens (classic)
-
-2. **Create a new token** with minimal required permissions:
-   - ✅ **repo** (Full control of private repositories)
-     - repo:status
-     - repo_deployment  
-     - public_repo (only if you want to sync to public repos)
-   - ❌ **Do NOT grant** admin, delete, or user permissions
-
-3. **Scope the token to specific repositories** (recommended):
-   - Instead of granting access to all repos, use fine-grained tokens
-   - Go to Personal access tokens → Fine-grained tokens
-   - Select only the repositories you want to sync to
-   - Grant only "Contents" and "Pull requests" permissions
-
-### Repository Security Best Practices
-
-#### Option 1: Dedicated Sync Repository (Recommended)
+### 2. Deploy Cloudflare Worker
 ```bash
-# Create a separate private repository just for Perplexity syncing
-gh repo create my-perplexity-docs --private
-# Use this repo in your REPO environment variable
+# Install Wrangler CLI
+npm install -g wrangler
+
+# Login to Cloudflare (free account works)
+wrangler login
+
+# Create new worker project
+wrangler init perplexity-sync
+cd perplexity-sync
 ```
 
-Benefits:
-- Isolates sync content from your main repositories
-- Easier to manage permissions and access
-- Can be shared selectively with collaborators
+Copy this code into `src/index.js`:
 
-#### Option 2: Branch Protection for Existing Repository
-If syncing to an existing repository:
+```javascript
+export default {
+  async fetch(request, env) {
+    if (request.method !== "POST") {
+      return new Response("POST only", { status: 405 });
+    }
 
-1. **Enable branch protection rules**:
-   - Go to Settings → Branches
-   - Add rule for your default branch (main/master)
-   - Enable "Require pull request reviews before merging"
-   - Enable "Restrict pushes that create files"
+    try {
+      const { filename, content } = await request.json();
+      
+      if (!filename || !content) {
+        return new Response("Missing filename or content", { status: 400 });
+      }
 
-2. **Create a dedicated folder**:
-   ```
-   your-repo/
-   ├── perplexity-sync/
-   │   ├── notes/
-   │   ├── documentation/
-   │   └── README.md
-   └── (your other files)
-   ```
+      const GITHUB_TOKEN = env.GITHUB_TOKEN;
+      const REPO = env.REPO; // Format: "username/repo-name"
+      const BASE_BRANCH = "main";
+      
+      // Create unique branch name
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const branchName = `perplexity-sync-${timestamp}`;
 
-### Worker Security Configuration
+      const githubHeaders = {
+        "Authorization": `token ${GITHUB_TOKEN}`,
+        "Content-Type": "application/json"
+      };
 
-#### Environment Variables Security
-```toml
-# In wrangler.toml - never put secrets here!
-[vars]
-REPO = "yourusername/your-private-repo"
-BASE_BRANCH = "main"
+      // Get base branch SHA
+      const baseRef = await fetch(
+        `https://api.github.com/repos/${REPO}/git/ref/heads/${BASE_BRANCH}`,
+        { headers: githubHeaders }
+      );
+      const baseData = await baseRef.json();
+      const baseSHA = baseData.object.sha;
 
-# Set secrets via CLI only:
-# wrangler secret put GITHUB_TOKEN
-# wrangler secret put API_KEY
+      // Create new branch
+      await fetch(`https://api.github.com/repos/${REPO}/git/refs`, {
+        method: "POST",
+        headers: githubHeaders,
+        body: JSON.stringify({
+          ref: `refs/heads/${branchName}`,
+          sha: baseSHA
+        })
+      });
+
+      // Check if file exists (to get SHA for updates)
+      let fileSha = null;
+      const getFile = await fetch(
+        `https://api.github.com/repos/${REPO}/contents/${filename}?ref=${branchName}`,
+        { headers: githubHeaders }
+      );
+      if (getFile.status === 200) {
+        const fileData = await getFile.json();
+        fileSha = fileData.sha;
+      }
+
+      // Create/update file
+      await fetch(`https://api.github.com/repos/${REPO}/contents/${filename}`, {
+        method: "PUT",
+        headers: githubHeaders,
+        body: JSON.stringify({
+          message: `Update ${filename} via Perplexity sync`,
+          content: btoa(unescape(encodeURIComponent(content))),
+          branch: branchName,
+          ...(fileSha ? { sha: fileSha } : {})
+        })
+      });
+
+      // Create pull request
+      const prResponse = await fetch(`https://api.github.com/repos/${REPO}/pulls`, {
+        method: "POST",
+        headers: githubHeaders,
+        body: JSON.stringify({
+          title: `📝 Update ${filename} from Perplexity`,
+          body: `Automated update from Perplexity AI\n\n- File: \`${filename}\`\n- Generated: ${new Date().toISOString()}`,
+          head: branchName,
+          base: BASE_BRANCH
+        })
+      });
+
+      const prData = await prResponse.json();
+      
+      return new Response(JSON.stringify({
+        success: true,
+        pr_url: prData.html_url,
+        pr_number: prData.number
+      }), { 
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+
+    } catch (error) {
+      return new Response(`Error: ${error.message}`, { status: 500 });
+    }
+  }
+};
 ```
 
-#### Optional API Key Protection
-Add an additional layer of security by requiring an API key:
+### 3. Configure Worker
+```bash
+# Set your repository (replace with your username/repo)
+wrangler secret put REPO
+# Enter: yourusername/your-repo-name
 
-1. **Generate a random API key:**
-   ```bash
-   # Generate a secure random key
-   openssl rand -hex 32
-   ```
+# Set your GitHub token
+wrangler secret put GITHUB_TOKEN  
+# Paste your GitHub token
 
-2. **Set it as a secret:**
-   ```bash
-   wrangler secret put API_KEY
-   ```
-
-3. **Include in requests from Perplexity:**
-   ```
-   Headers: Authorization: Bearer your-api-key-here
-   ```
-
-### Access Logging and Monitoring
-
-1. **Enable Cloudflare Analytics** (free tier includes basic analytics)
-
-2. **Monitor your GitHub token usage**:
-   - Go to GitHub Settings → Developer settings → Personal access tokens
-   - Check "Last used" dates to ensure your token isn't being misused
-
-3. **Set up repository notifications**:
-   - Go to your repository → Settings → Notifications
-   - Enable email notifications for pull requests
-
-## 📖 Usage
-
-### Basic Sync from Perplexity
-
-1. **In your Perplexity conversation:**
-   ```
-   Please sync this content to my GitHub repository as "notes/project-ideas.md":
-
-   # Project Ideas
-   - Build a documentation system
-   - Create automated workflows
-   - Implement version control for notes
-   ```
-
-2. **Perplexity posts to your endpoint** with the filename and content
-
-3. **Review the pull request** on GitHub and merge when ready
-
-### API Endpoint
-
-**POST** `https://your-worker.yourname.workers.dev`
-
-**Headers:**
-```
-Content-Type: application/json
-Authorization: Bearer your-api-key (optional)
+# Deploy
+wrangler deploy
 ```
 
-**Body:**
+Copy the deployment URL (something like `https://perplexity-sync.yourname.workers.dev`)
+
+## Usage
+
+In any Perplexity conversation, tell it:
+
+```
+Please sync this to my GitHub repo as "notes/my-ideas.md":
+
+# My Project Ideas
+- Build something cool
+- Document everything
+- Use version control
+```
+
+I'll POST to your endpoint, create a branch, commit the file, and open a PR for you to review.
+
+## Security
+
+**Your GitHub token is stored securely** in Cloudflare Workers secrets (encrypted at rest).
+
+**Repository stays private** - only you can access it with your token.
+
+**Pull request workflow** - nothing gets merged without your review.
+
+**Minimal permissions** - token only needs "Contents" and "Pull requests" access to your specific repo.
+
+## Cost
+
+- **Cloudflare Workers**: Free (100k requests/day)
+- **GitHub**: Free for private repos
+- **Total**: $0/month for personal use
+
+## Troubleshooting
+
+**"Unauthorized" error**: Check your GitHub token has the right permissions and isn't expired.
+
+**"Repository not found"**: Make sure REPO secret is formatted as "username/repo-name".
+
+**No PR created**: Check your repository name and that the token has "Pull requests" permission.
+
+## Advanced Options
+
+**Add API key protection:**
+```bash
+wrangler secret put API_KEY
+# Generate with: openssl rand -hex 32
+```
+
+Then include in requests: `Authorization: Bearer your-api-key`
+
+**Custom commit messages:**
 ```json
 {
-  "filename": "path/to/file.md",
-  "content": "# Your content here\n\nMarkdown or any text content",
-  "commit_message": "Optional custom commit message"
+  "filename": "notes/test.md",
+  "content": "# Test",
+  "commit_message": "Add new test notes"
 }
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "pr_url": "https://github.com/user/repo/pull/123",
-  "pr_number": 123,
-  "branch": "perplexity-sync-2025-10-07T22-13-45-123Z"
-}
-```
+## Credits
 
-## 📁 Project Structure
-
-```
-perplexity-github-sync/
-├── src/
-│   └── index.js              # Main Cloudflare Worker code
-├── docs/
-│   ├── setup-guide.md        # Detailed setup instructions
-│   ├── security-guide.md     # Security best practices
-│   └── api-reference.md      # Complete API documentation
-├── examples/
-│   ├── basic-usage/          # Simple examples
-│   └── advanced-workflows/   # Complex integration examples
-├── wrangler.toml.example     # Cloudflare Worker configuration template
-├── package.json
-├── LICENSE
-└── README.md
-```
-
-## 🔧 Configuration Options
-
-### Cloudflare Worker Settings
-
-Edit `wrangler.toml`:
-```toml
-name = "your-sync-worker"
-main = "src/index.js"
-compatibility_date = "2023-10-30"
-
-[vars]
-REPO = "yourusername/your-repo"
-BASE_BRANCH = "main"
-
-# Optional: Customize PR behavior
-PR_TITLE_PREFIX = "📝 Perplexity Sync: "
-AUTO_MERGE = "false"
-```
-
-### GitHub Repository Structure
-
-Recommended organization for synced content:
-```
-your-repo/
-├── perplexity-sync/
-│   ├── notes/
-│   │   ├── daily-notes.md
-│   │   └── project-ideas.md
-│   ├── documentation/
-│   │   ├── api-docs.md
-│   │   └── user-guides.md
-│   ├── research/
-│   │   └── market-analysis.md
-│   └── README.md
-├── .github/
-│   └── workflows/
-│       └── validate-sync.yml  # Optional: validate synced content
-└── README.md
-```
-
-## 🔒 Security Features
-
-- **Private repository support** with secure token handling
-- **Pull request workflow** prevents direct commits to main branch
-- **API key authentication** for additional endpoint security
-- **Minimal GitHub permissions** required
-- **Branch isolation** keeps each sync in a separate branch
-- **Audit trail** through GitHub's built-in change tracking
-
-## 💡 Use Cases
-
-- **Research Notes**: Sync research findings and analysis
-- **Documentation**: Maintain living documentation with AI assistance
-- **Meeting Notes**: Structured meeting notes with action items
-- **Project Planning**: Project roadmaps and planning documents
-- **Knowledge Base**: Build searchable knowledge repositories
-- **Code Documentation**: API docs and technical specifications
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Areas for Contribution
-
-- Enhanced error handling and retry logic
-- Support for multiple repository destinations
-- Integration with other documentation platforms
-- Advanced content transformation and formatting
-- Webhook integrations for automated workflows
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgments
-
-- **Generated by**: [Perplexity AI](https://perplexity.ai) - Initial codebase and documentation
-- **Reviewed and maintained by**: [@yourusername](https://github.com/yourusername) - Human oversight and quality assurance
-- Built for seamless AI-human collaboration workflows
-- Powered by [Cloudflare Workers](https://workers.cloudflare.com)
-- Inspired by the need for better AI-assisted documentation workflows
-
-## 📞 Support
-
-- **Documentation**: Check the `/docs/` folder for detailed guides
-- **Issues**: Report bugs or request features via GitHub Issues
-- **Discussions**: Join the conversation in GitHub Discussions
-- **Security**: Report security issues privately via email
+- **Generated by**: [Perplexity AI](https://perplexity.ai)
+- **Reviewed by**: [@yourusername](https://github.com/yourusername) 
+- **License**: MIT
 
 ---
 
-*Streamline your AI-assisted workflows with version-controlled collaboration! 🤖*
+*Now your Perplexity conversations can flow directly into version-controlled documentation! 🤖→📝→🔄*
