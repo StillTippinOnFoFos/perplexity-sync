@@ -42,6 +42,14 @@ export default {
       return new Response("POST only", { status: 405 });
     }
 
+    // Check API key if configured
+    if (env.API_KEY) {
+      const authHeader = request.headers.get("Authorization");
+      if (!authHeader || authHeader !== `Bearer ${env.API_KEY}`) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+    }
+
     try {
       const { filename, content } = await request.json();
       
@@ -133,7 +141,7 @@ export default {
 };
 ```
 
-### 3. Configure Worker
+### 3. Configure Worker Secrets
 ```bash
 # Set your repository (replace with your username/repo)
 wrangler secret put REPO
@@ -143,36 +151,102 @@ wrangler secret put REPO
 wrangler secret put GITHUB_TOKEN  
 # Paste your GitHub token
 
+# Generate and set API key for security
+openssl rand -hex 32
+wrangler secret put API_KEY
+# Paste the generated key
+
 # Deploy
 wrangler deploy
 ```
 
-Copy the deployment URL (something like `https://perplexity-sync.yourname.workers.dev`)
+**Save these values** - you'll need them for Perplexity:
+- Worker URL: `https://perplexity-sync.yourname.workers.dev`
+- API Key: `your-32-character-api-key`
+
+### 4. Configure Perplexity Integration
+
+In your Perplexity conversation, provide these details:
+
+```
+I've set up a GitHub sync endpoint. Here are the details:
+
+Endpoint URL: https://perplexity-sync.yourname.workers.dev
+API Key: your-32-character-api-key
+Repository: yourusername/your-repo-name
+
+Please use this endpoint to sync content when I ask you to save or commit files to GitHub.
+```
 
 ## Usage
 
-In any Perplexity conversation, tell it:
-
+### Basic Sync
 ```
-Please sync this to my GitHub repo as "notes/my-ideas.md":
+Please sync this content to my GitHub repo as "notes/project-ideas.md":
 
 # My Project Ideas
 - Build something cool
-- Document everything
+- Document everything  
 - Use version control
 ```
 
-I'll POST to your endpoint, create a branch, commit the file, and open a PR for you to review.
+### Organized Sync
+```
+Save this to "docs/api-reference.md" in my GitHub repo:
+
+# API Documentation
+## Overview
+This API handles user authentication...
+```
+
+### Custom Commit Message
+```
+Commit this as "changelog.md" with message "Add v2.0 release notes":
+
+# Changelog
+## v2.0.0
+- Added new features
+- Fixed bugs
+```
+
+## How Perplexity Integration Works
+
+When you ask Perplexity to sync content, it will:
+
+1. **POST to your endpoint** with this format:
+   ```json
+   {
+     "filename": "path/to/file.md",
+     "content": "# Your content here...",
+     "commit_message": "Optional custom message"
+   }
+   ```
+
+2. **Include your API key** in the Authorization header:
+   ```
+   Authorization: Bearer your-32-character-api-key
+   ```
+
+3. **Return the PR details** so you can review:
+   ```json
+   {
+     "success": true,
+     "pr_url": "https://github.com/user/repo/pull/123",
+     "pr_number": 123
+   }
+   ```
 
 ## Security
 
-**Your GitHub token is stored securely** in Cloudflare Workers secrets (encrypted at rest).
+**API Key Protection**: Each request must include your unique API key - prevents unauthorized access to your endpoint.
 
-**Repository stays private** - only you can access it with your token.
+**GitHub Token**: Stored securely in Cloudflare Workers secrets (encrypted at rest).
 
-**Pull request workflow** - nothing gets merged without your review.
+**Repository Access**: Token only needs "Contents" and "Pull requests" permissions to your specific repo.
 
-**Minimal permissions** - token only needs "Contents" and "Pull requests" access to your specific repo.
+**Pull Request Workflow**: Nothing gets merged without your review.
+
+**Private Repository**: Everything stays in your private repo, only accessible with your token.
 
 ## Cost
 
@@ -182,29 +256,60 @@ I'll POST to your endpoint, create a branch, commit the file, and open a PR for 
 
 ## Troubleshooting
 
-**"Unauthorized" error**: Check your GitHub token has the right permissions and isn't expired.
+**"Unauthorized" error**: 
+- Check your API key is set correctly in Cloudflare secrets
+- Make sure you're providing the right API key to Perplexity
+- Verify your GitHub token has the right permissions and isn't expired
 
-**"Repository not found"**: Make sure REPO secret is formatted as "username/repo-name".
+**"Repository not found"**: 
+- Make sure REPO secret is formatted as "username/repo-name"
+- Check your GitHub token has access to the repository
 
-**No PR created**: Check your repository name and that the token has "Pull requests" permission.
+**No PR created**: 
+- Verify your repository name is correct
+- Ensure the token has "Pull requests" permission
+- Check Cloudflare worker logs: `wrangler tail`
 
-## Advanced Options
+**Perplexity can't connect**:
+- Verify your worker URL is correct and accessible
+- Test the endpoint manually with curl:
+  ```bash
+  curl -X POST https://your-worker.workers.dev \
+    -H "Authorization: Bearer your-api-key" \
+    -H "Content-Type: application/json" \
+    -d '{"filename": "test.md", "content": "# Test"}'
+  ```
 
-**Add API key protection:**
-```bash
-wrangler secret put API_KEY
-# Generate with: openssl rand -hex 32
+## Example Perplexity Prompts
+
+**Research Notes**:
+```
+Please sync my research findings to "research/market-analysis.md":
+
+# Market Analysis - Q4 2025
+## Key Findings
+- Market grew 15% this quarter
+- New competitors emerged
 ```
 
-Then include in requests: `Authorization: Bearer your-api-key`
+**Meeting Notes**:
+```
+Save these meeting notes as "meetings/2025-10-07-team-sync.md":
 
-**Custom commit messages:**
-```json
-{
-  "filename": "notes/test.md",
-  "content": "# Test",
-  "commit_message": "Add new test notes"
-}
+# Team Sync - October 7, 2025
+## Attendees: John, Sarah, Mike
+## Action Items:
+- [ ] Update documentation by Friday
+- [ ] Review pull requests
+```
+
+**Documentation Updates**:
+```
+Update "docs/troubleshooting.md" with this new section:
+
+## Common Issues
+### Database Connection
+If you see connection errors, check...
 ```
 
 ## Credits
